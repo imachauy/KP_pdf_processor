@@ -1,0 +1,63 @@
+services:
+  km_manager_api:
+    build: .
+    image: km_manager_api
+    env_file:
+      - .env
+    ports:
+      - '4040:3000'
+    depends_on:
+      - mongodb
+      - dgraph
+      - postgresql
+    networks:
+      - node-network
+
+  mongodb:
+    hostname: mongodb
+    image: mongo:4.2.1-bionic
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongodb-data:/data/db
+    networks:
+      - node-network
+
+  dgraph:
+    image: dgraph/standalone:v20.03.0
+    networks:
+      - node-network
+    ports:
+      - "6080:6080"
+      - "8081:8080"
+      - "9080:9080"
+      - "8000:8000"
+    volumes:
+      - dgraph-data:/dgraph 
+
+  postgresql:
+    image: postgres:14
+    networks:
+      - node-network
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=explain
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=password
+
+  pdf-worker:
+    build: ./pdf_processor
+    container_name: pdf-worker
+    env_file:
+      - .env
+    networks:
+      - node-network
+
+volumes:
+  mongodb-data:
+  dgraph-data:
+
+networks:
+  node-network:
+    driver: bridge
