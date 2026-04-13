@@ -4,4 +4,4 @@ neo4j
 openai
 scikit-learn
 python-dotenv
-clickhouse-connect
+mysql-connector-python
