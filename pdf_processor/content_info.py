@@ -1,3 +1,9 @@
+COL_OPERATION_NAME = 0
+COL_CONTENTS_ID = 1
+COL_CONTENTS_NAME = 2
+COL_CONTEXT_LABEL = 3
+COL_TIMESTAMP = 4
+
 import base64
 import logging
 import os
@@ -170,7 +176,7 @@ def main():
                 cursor = conn.cursor()
 
             query = f"""
-                SELECT operation_name, contents_id, contents_name, school_id, context_label, timestamp
+                SELECT operationname, contentsid, contentsname, course_title, operationdate
                 FROM {MYSQL_TABLE}
                 WHERE timestamp > %s
                 ORDER BY timestamp ASC
@@ -183,7 +189,7 @@ def main():
             if rows:
                 handle_rows(rows)
                 # 最後の行のtimestamp(index 5)でカーソル更新
-                last_seen = parse_cursor(rows[-1][5])
+                last_seen = parse_cursor(rows[-1][4])
                 save_cursor(last_seen)
                 logger.info("Advanced cursor to %s", format_cursor(last_seen))
             else:

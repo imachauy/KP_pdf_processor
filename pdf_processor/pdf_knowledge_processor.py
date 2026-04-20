@@ -355,7 +355,7 @@ def download_pdf_bytes(contents_id):
 # ==========================================
 # 3. メイン処理ロジック (1コンテンツ分)
 # ==========================================
-def process_single_content(contents_id, school_id, contents_name, course_name):
+def process_single_content(contents_id, contents_name, course_name):
     """
     1つのコンテンツ(PDF)に対する処理フロー
     """
@@ -377,7 +377,6 @@ def process_single_content(contents_id, school_id, contents_name, course_name):
         SET b.contents_name = $contents_name,
             b.subject = $subject,
             b.school_year = $school_year,
-            b.school_id = $school_id,
             b.updated_at = datetime()
         """
         with global_estimator.driver.session() as session:
@@ -385,8 +384,7 @@ def process_single_content(contents_id, school_id, contents_name, course_name):
                         contents_id=contents_id, 
                         contents_name=contents_name,
                         subject=subject, 
-                        school_year=school_year, 
-                        school_id=school_id)
+                        school_year=school_year)
             logger.info("  - Book node merged/updated.")
 
         # 3-3. PDFダウンロードと画像変換
@@ -477,7 +475,6 @@ def custom_handle_rows(rows):
         item = {
             "contents_id": c_id,
             "contents_name": row[content_info.COL_CONTENTS_NAME],
-            "school_id": row[content_info.COL_SCHOOL_ID],
             "context_label": row[content_info.COL_CONTEXT_LABEL]
         }
         candidates.append(item)
@@ -505,8 +502,7 @@ def custom_handle_rows(rows):
     # 重い処理なので1件ずつ順次実行
     for item in verified_items:
         process_single_content(
-            contents_id=item["contents_id"], 
-            school_id=item["school_id"], 
+            contents_id=item["contents_id"],
             contents_name=item["contents_name"],
             course_name=item["context_label"] # context_labelをcourse_nameとして利用
         )
