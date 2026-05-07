@@ -319,8 +319,8 @@ def main():
             query = f"""
                 SELECT operationname, contentsid, contentsname, course_title, operationdate
                 FROM {MYSQL_TABLE}
-                WHERE timestamp > %s
-                ORDER BY timestamp ASC
+                WHERE operationdate > %s
+                ORDER BY operationdate ASC
                 LIMIT 5000
             """
             
