@@ -119,31 +119,172 @@ def get_mysql_connection():
         autocommit=True
     )
 
+def build_auth_headers():
+    headers = {}
+    if LEAF_SEND_X_HEADERS:
+        if LEAF_API_KEY:
+            headers["X-API-KEY"] = LEAF_API_KEY
+        else:
+            logger.warning("LEAF_SEND_X_HEADERS enabled but LEAF_API_KEY is not set")
+        if LEAF_API_SECRET:
+            headers["X-API-SECRET"] = LEAF_API_SECRET
+        else:
+            logger.warning("LEAF_SEND_X_HEADERS enabled but LEAF_API_SECRET is not set")
+
+    if LEAF_AUTH_HEADER:
+        headers["Authorization"] = LEAF_AUTH_HEADER
+        return headers
+
+    if LEAF_AUTH_SCHEME == "none":
+        return headers
+    if LEAF_AUTH_SCHEME == "basic":
+        token = base64.b64encode(f"{LEAF_API_KEY}:{LEAF_API_SECRET}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {token}"
+        return headers
+    if LEAF_AUTH_SCHEME == "basic-token":
+        if not LEAF_AUTH_TOKEN:
+            raise ValueError("LEAF_AUTH_TOKEN is required for LEAF_AUTH_SCHEME=basic-token")
+        headers["Authorization"] = f"Basic {LEAF_AUTH_TOKEN}"
+        return headers
+    if LEAF_AUTH_SCHEME == "bearer":
+        token = LEAF_AUTH_TOKEN or get_auth_token()
+        headers["Authorization"] = f"Bearer {token}"
+        return headers
+    if LEAF_AUTH_SCHEME == "token":
+        token = LEAF_AUTH_TOKEN or get_auth_token()
+        headers["Authorization"] = f"Token {token}"
+        return headers
+    if LEAF_AUTH_SCHEME == "apikey":
+        token = LEAF_AUTH_TOKEN or get_auth_token()
+        headers["Authorization"] = f"ApiKey {token}"
+        return headers
+    if LEAF_AUTH_SCHEME == "auto":
+        token = LEAF_AUTH_TOKEN or get_auth_token()
+        scheme = TOKEN_TYPE or "Token"
+        headers["Authorization"] = f"{scheme} {token}"
+        return headers
+
+    raise ValueError(f"Unsupported LEAF_AUTH_SCHEME: {LEAF_AUTH_SCHEME}")
+
+def build_base_url():
+    base_url = LEAF_API_URL.rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        logger.warning("LEAF_API_URL missing scheme, defaulting to http://")
+        base_url = f"http://{base_url}"
+    if LEAF_API_PORT:
+        split = urllib.parse.urlsplit(base_url)
+        netloc = split.netloc
+        if ":" not in netloc:
+            netloc = f"{netloc}:{LEAF_API_PORT}"
+        base_url = urllib.parse.urlunsplit((split.scheme, netloc, split.path.rstrip("/"), "", ""))
+    return base_url
+
+def build_pdf_url(content_id):
+    base_url = build_base_url()
+    endpoint = "/api/get_pdf_by_id"
+    query = urllib.parse.urlencode({"content_id": content_id})
+    return f"{base_url}{endpoint}?{query}"
+
+def build_token_url():
+    base_url = build_base_url()
+    endpoint = LEAF_TOKEN_ENDPOINT.strip()
+    if not endpoint.startswith("/"):
+        endpoint = f"/{endpoint}"
+    return f"{base_url}{endpoint}"
+
 def get_auth_token():
     global TOKEN_VALUE, TOKEN_EXPIRES_AT, TOKEN_TYPE
     now = datetime.now()
     with TOKEN_LOCK:
         if TOKEN_VALUE and TOKEN_EXPIRES_AT and now < TOKEN_EXPIRES_AT:
             return TOKEN_VALUE
-        
-        # ... (トークン取得ロジックは元のコードと同じため省略可だが、動く状態で維持)
+
         url = build_token_url()
-        payload = {LEAF_TOKEN_KEY_FIELD: LEAF_TOKEN_CLIENT, LEAF_TOKEN_SECRET_FIELD: LEAF_TOKEN_SECRET}
+        payload = {
+            LEAF_TOKEN_KEY_FIELD: LEAF_TOKEN_CLIENT,
+            LEAF_TOKEN_SECRET_FIELD: LEAF_TOKEN_SECRET,
+        }
         data = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
-        req = urllib.request.Request(url, data=data, headers=headers, method=LEAF_TOKEN_METHOD)
-        
+        logger.info("Requesting auth token from %s with fields %s", url, list(payload.keys()))
+        request = urllib.request.Request(url, data=data, headers=headers, method=LEAF_TOKEN_METHOD)
         try:
-            with urllib.request.urlopen(req, timeout=LEAF_API_TIMEOUT) as resp:
-                body = resp.read().decode("utf-8")
-                token, expires_at, t_type = parse_token_response(body, now)
-                TOKEN_VALUE, TOKEN_EXPIRES_AT, TOKEN_TYPE = token, expires_at, t_type
-                return TOKEN_VALUE
-        except Exception as e:
-            raise RuntimeError(f"Auth failed: {e}")
+            with urllib.request.urlopen(request, timeout=LEAF_API_TIMEOUT) as response:
+                body = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = "<unreadable response body>"
+            raise RuntimeError(f"Token request HTTP {exc.code}: {body}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError("Failed to reach token endpoint") from exc
 
-# (build_auth_headers, build_base_url, build_pdf_url, build_token_url, parse_token_response, check_pdf_endpoint は元のロジックを継承)
-# 省略していますが、実装は元のコードをそのまま貼り付けてください
+        token, expires_at, token_type = parse_token_response(body, now)
+        TOKEN_VALUE = token
+        TOKEN_EXPIRES_AT = expires_at
+        TOKEN_TYPE = token_type
+        if TOKEN_TYPE:
+            logger.info("Token type from response: %s", TOKEN_TYPE)
+        return TOKEN_VALUE
+
+def parse_token_response(body, now):
+    token = None
+    token_type = None
+    expires_at = now + timedelta(seconds=LEAF_TOKEN_TTL_SECONDS)
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        data = None
+
+    if isinstance(data, dict):
+        if LEAF_TOKEN_FIELD:
+            token = data.get(LEAF_TOKEN_FIELD)
+        if not token:
+            for key in ("access_token", "token", "jwt", "auth_token"):
+                if key in data:
+                    token = data[key]
+                    break
+        if "token_type" in data:
+            token_type = data["token_type"]
+        if "expires_in" in data:
+            try:
+                expires_at = now + timedelta(seconds=int(data["expires_in"]))
+            except (TypeError, ValueError):
+                pass
+        if "expires_at" in data:
+            try:
+                expires_at = parse_cursor(data["expires_at"])
+            except ValueError:
+                pass
+
+    if not token:
+        token = body.strip()
+
+    if not token:
+        raise RuntimeError("Token response did not include a token")
+    return token, expires_at, token_type
+
+def check_pdf_endpoint(content_id):
+    url = build_pdf_url(content_id)
+    logger.info("Checking PDF URL: %s", url)
+    request = urllib.request.Request(url, headers=build_auth_headers())
+    try:
+        with urllib.request.urlopen(request, timeout=LEAF_API_TIMEOUT) as response:
+            if response.status == 200:
+                logger.info("PDF URL OK: %s", url)
+                return
+            raise RuntimeError(f"Unexpected status {response.status} for {content_id}")
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = "<unreadable response body>"
+        raise RuntimeError(f"HTTP {exc.code} while fetching {content_id}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to reach API for {content_id}") from exc
 
 def handle_rows(rows):
     """取得したレコードを並列処理する"""
