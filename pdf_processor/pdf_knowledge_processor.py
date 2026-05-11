@@ -361,7 +361,18 @@ def process_single_content(contents_id, contents_name, course_name):
     """
     logger.info(f"★ START Processing: {contents_name} (ID: {contents_id})")
 
-    # 3-1. メタデータの抽出
+    # 既に処理済みかどうかのチェック (Neo4jにBookSectionが存在するか)
+    check_query = "MATCH (bs:BookSection {contents_id: $contents_id}) RETURN count(bs) AS cnt"
+    try:
+        with global_estimator.driver.session() as session:
+            result = session.run(check_query, contents_id=contents_id)
+            count = result.single()["cnt"]
+            if count > 0:
+                logger.info(f"⏭️ SKIP: {contents_name} (ID: {contents_id}) は既に処理済みのためスキップします。")
+                return # 既に存在する場合はここで処理を終了する
+    except Exception as e:
+        logger.error(f"Neo4j Duplicate Check Error: {e}")
+
     match_subject = re.search(r'\[(.*?)\]', course_name)
     subject = match_subject.group(1) if match_subject else ""
 
@@ -371,7 +382,6 @@ def process_single_content(contents_id, contents_name, course_name):
     logger.info(f"  - Meta: Subject={subject}, Year={school_year}")
 
     try:
-        # 3-2. Bookノードの作成
         query_create_book = """
         MERGE (b:Book {contents_id: $contents_id})
         SET b.contents_name = $contents_name,
@@ -387,22 +397,12 @@ def process_single_content(contents_id, contents_name, course_name):
                         school_year=school_year)
             logger.info("  - Book node merged/updated.")
 
-        # 3-3. PDFダウンロードと画像変換
         pdf_bytes = download_pdf_bytes(contents_id)
-        logger.info("  - PDF downloaded. Converting to images (450dpi)...")
-
-        # ====== ▼▼ デバッグ用に追加 ▼▼ ======
-        debug_pdf_path = f"/app/debug_downloaded.pdf"
-        with open(debug_pdf_path, "wb") as f:
-            f.write(pdf_bytes)
-        logger.info(f"  - [DEBUG] ダウンロードしたPDFのサイズ: {len(pdf_bytes)} bytes")
-        # ====== ▲▲ デバッグ用に追加 ▲▲ ======
+        logger.info("  - PDF downloaded. Converting to images (200dpi)...")
         
-        # PDFをメモリから読み込んで画像変換 (popplerが必要です)
         images = convert_from_bytes(pdf_bytes, dpi=450, fmt='jpeg')
         logger.info(f"  - Converted {len(images)} pages.")
 
-        # 3-4. 各ページ処理ループ
         query_create_section = """
         MATCH (b:Book {contents_id: $contents_id})
         MERGE (bs:BookSection {contentssection_id: $contentssection_id})
@@ -417,42 +417,43 @@ def process_single_content(contents_id, contents_name, course_name):
 
         with global_estimator.driver.session() as session:
             for i, image in enumerate(images, start=1):
-                page_id = i
-                logger.info(f"  - Processing Page {page_id}...")
-                
-                # OpenAI Vision Extraction
-                text_info, image_info = extract_info_from_image_raw(image)
-                
-                # VSM Calculation
-                text_for_embedding = text_info.replace("\n", " ")
-                vsm_vector = []
-                if text_for_embedding:
-                    try:
-                        resp = global_estimator.client.embeddings.create(input=[text_for_embedding], model="text-embedding-3-small")
-                        vsm_vector = resp.data[0].embedding
-                    except Exception as e:
-                        logger.error(f"  Embedding Error on page {page_id}: {e}")
+                # バグ修正: ページごとのエラーで全体が止まらないよう try-except で囲む
+                try:
+                    page_id = i
+                    logger.info(f"  - Processing Page {page_id} / {len(images)} ...")
+                    
+                    text_info, image_info = extract_info_from_image_raw(image)
+                    
+                    text_for_embedding = text_info.replace("\n", " ").strip()
+                    vsm_vector = []
+                    if text_for_embedding:
+                        try:
+                            resp = global_estimator.client.embeddings.create(input=[text_for_embedding], model="text-embedding-3-small")
+                            vsm_vector = resp.data[0].embedding
+                        except Exception as e:
+                            logger.error(f"    Embedding Error on page {page_id}: {e}")
 
-                # ID生成 (ご指定のフォーマット)
-                contentssection_id = f"{contents_id}_{page_id}_{page_id}"
+                    contentssection_id = f"{contents_id}_{page_id}_{page_id}"
+                    
+                    session.run(query_create_section,
+                                contentssection_id=contentssection_id,
+                                contents_id=contents_id,
+                                page_start=page_id,
+                                page_end=page_id,
+                                contents=text_info,
+                                images=image_info,
+                                vsm=vsm_vector)
+                    
+                    global_estimator.process_page(text_info, contentssection_id, pre_calculated_vsm=vsm_vector)
                 
-                # Neo4j登録
-                session.run(query_create_section,
-                            contentssection_id=contentssection_id,
-                            contents_id=contents_id,
-                            page_start=page_id,
-                            page_end=page_id,
-                            contents=text_info,
-                            images=image_info,
-                            vsm=vsm_vector)
-                
-                # 単元推定実行
-                global_estimator.process_page(text_info, contentssection_id, pre_calculated_vsm=vsm_vector)
+                except Exception as page_e:
+                    logger.error(f"  ❌ Error on Page {i}: {page_e}")
+                    continue # エラーが起きても次のページへ進む
 
-        logger.info(f"✔ Completed: {contents_name}")
+        logger.info(f"✔ Completed Full Process: {contents_name}")
 
     except Exception as e:
-        logger.error(f"❌ Failed to process {contents_id}: {e}", exc_info=True)
+        logger.error(f"❌ Failed to process document {contents_id}: {e}", exc_info=True)
 
 
 # ==========================================
