@@ -381,6 +381,11 @@ def process_single_content(contents_id, contents_name, course_name):
 
     logger.info(f"  - Meta: Subject={subject}, Year={school_year}")
 
+    # 数学でない場合は処理を終了する
+    if "数学" not in subject:
+        logger.info(f"⏭️ SKIP: {contents_name} (ID: {contents_id}) は数学ではないためスキップします。")
+        return # 既に存在する場合はここで処理を終了する
+
     try:
         query_create_book = """
         MERGE (b:Book {contents_id: $contents_id})
