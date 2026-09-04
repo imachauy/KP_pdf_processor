@@ -263,13 +263,14 @@ class BaseSubjectProcessor:
             bs.images = $images,
             bs.vsm = $vsm,
             bs.object_id = $object_id,
+            bs.updated_at = datetime(),
             bs.is_pre_defined = false
         MERGE (bs)-[:PART_OF]->(b)
         """
         with self.driver.session() as session:
             session.run(query, contents_id=self.contents_id, section_id=section_id,
                         page_id=page_id, contents=text_info, images=image_info, vsm=vsm_vector,
-                        object_id=self.object_id) # object_id を保存
+                        object_id=self.object_id)
 
     def process_images(self, images):
         for i, image in enumerate(images, start=1):
@@ -470,6 +471,7 @@ class EnglishProcessor(BaseSubjectProcessor):
             concept_id: $concept_id,
             concept_name: $concept_name,
             subject: '英語',
+            updated_at: datetime(),
             is_pre_defined: false
         })
         """
@@ -623,6 +625,7 @@ class JapaneseProcessor(BaseSubjectProcessor):
             concept_name: $concept_name,
             description: '単語',
             subject: '国語',
+            updated_at: datetime(),
             is_pre_defined: false
         })
         """
