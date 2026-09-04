@@ -1,7 +1,25 @@
-numpy
-pdf2image
-neo4j
-openai
-scikit-learn
+# 環境変数管理
 python-dotenv
+
+# データベース接続
+clickhouse-connect
 mysql-connector-python
+neo4j
+
+# OpenAI API
+openai
+
+# データ処理・数値計算
+numpy
+pandas
+scikit-learn
+
+# PDF・画像処理
+pdf2image
+
+# 自然言語処理（英語・日本語）
+nltk
+janome
+
+# ユーティリティ
+tqdm

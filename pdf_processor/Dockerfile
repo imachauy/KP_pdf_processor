@@ -14,5 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # コードやデータをすべてコンテナ内にコピー
 COPY . .
 
-# コンテナが起動したときにメインコードを実行する
-CMD ["python", "pdf_knowledge_processor.py"]
+# start.sh に実行権限を付与
+RUN chmod +x start.sh
+
+# コンテナが起動したときに start.sh を実行する
+CMD ["./start.sh"]
