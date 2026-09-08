@@ -5,6 +5,7 @@ import pandas as pd
 from tqdm import tqdm
 from neo4j import GraphDatabase
 from openai import OpenAI
+from datetime import datetime
 
 # ==========================================
 # 設定
@@ -71,10 +72,12 @@ def process_math_units(driver):
     MERGE (u:Unit {unit_id: $id})
     SET u.unit_name = $name,
         u.subject = "数学",
-        u.is_pre_defined = true
+        u.is_pre_defined = true,
+        u.updated_at = datetime()
     WITH u
     MATCH (p:Property {property_id: $grade, description: "grades"})
-    MERGE (u)-[:PART_OF]->(p)
+    MERGE (u)-[r:PART_OF]->(p)
+    SET r.updated_at = datetime()
     """
 
     print(f"🚀 [1/4] {MATH_UNIT_CSV} の登録を開始します...")
@@ -100,10 +103,12 @@ def process_math_subunits(driver):
     MERGE (sub:Unit {unit_id: $id})
     SET sub.unit_name = $name,
         sub.subject = "数学",
+        sub.updated_at = datetime(),
         sub.is_pre_defined = true
     WITH sub
     MATCH (parent:Unit {unit_id: $child_of})
-    MERGE (sub)-[:PART_OF]->(parent)
+    MERGE (sub)-[r:PART_OF]->(parent)
+    SET r.updated_at = datetime()
     """
 
     print(f"🚀 [2/4] {MATH_SUBUNIT_CSV} の登録を開始します...")
@@ -130,6 +135,7 @@ def process_math_keywords(driver):
     SET c.concept_name = $name,
         c.description = "単語",
         c.subject = "数学",
+        c.updated_at = datetime(),
         c.is_pre_defined = true
     """
 
@@ -167,6 +173,7 @@ def process_math_quizzes(driver, client):
         bs.images = "",
         bs.vsm = $vsm,
         bs.subject = "数学",
+        bs.updated_at = datetime(),
         bs.is_pre_defined = true
     """
     
@@ -183,6 +190,7 @@ def process_math_quizzes(driver, client):
         bs.images = "",
         bs.vsm = $vsm,
         bs.subject = "数学",
+        bs.updated_at = datetime(),
         bs.is_pre_defined = true
     """
     
@@ -191,7 +199,7 @@ def process_math_quizzes(driver, client):
     MATCH (bs:BookSection {contentssection_id: $bs_id})
     MATCH (u:Unit {unit_id: $sub_unit})
     MERGE (bs)-[r:RELATED_TO]->(u)
-    SET r.ratio = 1.0, r.rank = 1
+    SET r.ratio = 1.0, r.rank = 1, r.updated_at = datetime()
     """
     
     # キーワード紐付けクエリ
@@ -200,7 +208,7 @@ def process_math_quizzes(driver, client):
     UNWIND $keyword_data AS kw
     MATCH (c:Concept {concept_name: kw.name, subject: '数学'})
     MERGE (bs)-[r:CONTAINS]->(c)
-    SET r.num = kw.count
+    SET r.num = kw.count, r.updated_at = datetime()
     """
 
     print(f"🚀 [4/4] {MATH_QUIZ_CSV} の登録を開始します...")

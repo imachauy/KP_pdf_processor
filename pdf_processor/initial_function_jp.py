@@ -2,6 +2,7 @@ import os
 import pandas as pd
 from neo4j import GraphDatabase
 from tqdm import tqdm
+from datetime import datetime
 
 # ==========================================
 # 設定
@@ -52,12 +53,12 @@ def format_yomi(val):
 def register_master_data(driver):
     """Unit, Unitの階層, Propertyのマスタデータを登録"""
     # 変更: u.is_pre_defined = true を追加
-    q_unit = "MERGE (u:Unit {unit_id: $id}) SET u.unit_name = $name, u.subject = '国語', u.is_pre_defined = true"
+    q_unit = "MERGE (u:Unit {unit_id: $id}) SET u.unit_name = $name, u.subject = '国語', u.is_pre_defined = true, u.updated_at = datetime()"
     
-    q_part_of = "MATCH (c:Unit {unit_id: $cid}), (p:Unit {unit_id: $pid}) MERGE (c)-[:PART_OF]->(p)"
+    q_part_of = "MATCH (c:Unit {unit_id: $cid}), (p:Unit {unit_id: $pid}) MERGE (c)-[r:PART_OF]->(p) SET r.updated_at = datetime()"
     
     # 変更: p.is_pre_defined = true を追加
-    q_prop = "MERGE (p:Property {property_id: $id}) SET p.property_name = $name, p.subject = '国語', p.description = $desc, p.is_pre_defined = true"
+    q_prop = "MERGE (p:Property {property_id: $id}) SET p.property_name = $name, p.subject = '国語', p.description = $desc, p.is_pre_defined = true, p.updated_at = datetime()"
 
     with driver.session() as session:
         for uid, uname in UNIT_DATA_KOKUGO:
@@ -87,11 +88,12 @@ def process_csv(driver):
         c.yomi_on = $yomi_on,
         c.yomi_kun = $yomi_kun,
         c.subject = "国語",
+        c.updated_at = datetime(),
         c.is_pre_defined = true
     """
     
-    q_link_u = "MATCH (c:Concept {concept_id: $cid}), (u:Unit {unit_id: $uid}) MERGE (c)-[:BELONG_TO]->(u)"
-    q_link_p = "MATCH (c:Concept {concept_id: $cid}), (p:Property {property_id: $pid}) MERGE (c)-[:BELONG_TO]->(p)"
+    q_link_u = "MATCH (c:Concept {concept_id: $cid}), (u:Unit {unit_id: $uid}) MERGE (c)-[r:BELONGS_TO]->(u) SET r.updated_at = datetime()"
+    q_link_p = "MATCH (c:Concept {concept_id: $cid}), (p:Property {property_id: $pid}) MERGE (c)-[r:BELONGS_TO]->(p) SET r.updated_at = datetime()"
 
     with driver.session() as session:
         for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing Kokugo CSV"):
@@ -129,7 +131,7 @@ def link_phonetic_variants(driver):
     MATCH (base:Concept {concept_name: $base_char})
     MATCH (variant:Concept {concept_name: $variant_char})
     MERGE (variant)-[r:FOLLOWS]->(base)
-    SET r.description = $desc
+    SET r.description = $desc, r.updated_at = datetime()
     """
     
     print("🔗 Linking Phonetic Variants (Dakuon & Handakuon)...")

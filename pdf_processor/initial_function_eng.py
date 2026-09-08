@@ -2,6 +2,7 @@ import os
 import pandas as pd
 from neo4j import GraphDatabase
 from tqdm import tqdm
+from datetime import datetime
 
 CSV_FILE = "csv2_data.csv"
 NEO4J_URI = os.getenv("NEO4J_URL", "bolt://localhost:7687")
@@ -39,10 +40,10 @@ def fetch_target_units(driver):
 def register_master_data(driver):
     """UnitとPropertyのマスタデータを登録（MERGEにより重複回避・上書き）"""
     # 変更: u.is_pre_defined = true を追加
-    query_unit = "MERGE (u:Unit {unit_id: $id}) SET u.unit_name = $name, u.subject = '英語', u.is_pre_defined = true"
+    query_unit = "MERGE (u:Unit {unit_id: $id}) SET u.unit_name = $name, u.subject = '英語', u.is_pre_defined = true, u.updated_at = datetime()"
     
     # 変更: p.is_pre_defined = true を追加
-    query_prop = "MERGE (p:Property {property_id: $id}) SET p.property_name = $name, p.subject = '英語', p.description = $desc, p.is_pre_defined = true"
+    query_prop = "MERGE (p:Property {property_id: $id}) SET p.property_name = $name, p.subject = '英語', p.description = $desc, p.is_pre_defined = true, p.updated_at = datetime()"
     
     with driver.session() as session:
         for uid, uname in UNIT_DATA:
@@ -65,20 +66,22 @@ def process_csv(driver):
     q_concept = """
     MERGE (c:Concept {concept_id: $c_id})
     SET c.concept_name = $c_name,
-        c.is_pre_defined = true  // ←変更: 追加
+        c.is_pre_defined = true,
+        c.updated_at = datetime()
     """
     
     # RELATED_TOエッジの重複防止とプロパティ上書き
     q_link_unit = """
     MATCH (c:Concept {concept_id: $c_id}), (u:Unit {unit_id: $u_id})
     MERGE (c)-[r:RELATED_TO]->(u)
-    SET r.ratio = 1, r.rank = -1
+    SET r.ratio = 1, r.rank = -1, r.updated_at = datetime()
     """
     
     # BELONGS_TOエッジの重複防止
     q_link_prop = """
     MATCH (c:Concept {concept_id: $c_id}), (p:Property {property_id: $p_id})
-    MERGE (c)-[:BELONGS_TO]->(p)
+    MERGE (c)-[r:BELONGS_TO]->(p)
+    SET r.updated_at = datetime()
     """
 
     with driver.session() as session:

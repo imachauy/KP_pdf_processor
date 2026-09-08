@@ -163,7 +163,7 @@ class MathUnitEstimator:
             WHERE toInteger(c.concept_id) > 989999999
             
             MERGE (bs)-[r:CONTAINS]->(c)
-            SET r.num = kw.count
+            SET r.num = kw.count, r.updated_at = datetime()
             """
             try:
                 with self.driver.session() as session:
@@ -209,7 +209,7 @@ class MathUnitEstimator:
         MATCH (bs:BookSection {contentssection_id: $bs_id})
         MATCH (u:Unit {unit_id: $target_unit_id})
         MERGE (bs)-[r:RELATED_TO]->(u)
-        SET r.ratio = $score, r.rank =$rank
+        SET r.ratio = $score, r.rank =$rank, r.updated_at = datetime()
         """
         try:
             with self.driver.session() as session:
@@ -265,7 +265,8 @@ class BaseSubjectProcessor:
             bs.object_id = $object_id,
             bs.updated_at = datetime(),
             bs.is_pre_defined = false
-        MERGE (bs)-[:PART_OF]->(b)
+        MERGE (bs)-[r:PART_OF]->(b)
+        SET r.updated_at = datetime()
         """
         with self.driver.session() as session:
             session.run(query, contents_id=self.contents_id, section_id=section_id,
@@ -480,7 +481,8 @@ class EnglishProcessor(BaseSubjectProcessor):
         query_pos = """
         MATCH (c:Concept {concept_id: $concept_id})
         MATCH (p:Property {property_name: $pos_name, subject: '英語', description: 'part_of_speech'})
-        MERGE (c)-[:BELONGS_TO]->(p)
+        MERGE (c)-[r:BELONGS_TO]->(p)
+        SET r.updated_at = datetime()
         """
         session.run(query_pos, concept_id=concept_id, pos_name=pos_name)
 
@@ -488,7 +490,8 @@ class EnglishProcessor(BaseSubjectProcessor):
         query_cefr = """
         MATCH (c:Concept {concept_id: $concept_id})
         MATCH (p:Property {property_name: $level, subject: '英語', description: 'difficulty'})
-        MERGE (c)-[:BELONGS_TO]->(p)
+        MERGE (c)-[r:BELONGS_TO]->(p)
+        SET r.updated_at = datetime()
         """
         session.run(query_cefr, concept_id=concept_id, level=cefr_level)
 
@@ -497,7 +500,7 @@ class EnglishProcessor(BaseSubjectProcessor):
         MATCH (c:Concept {concept_id: $concept_id})
         MATCH (u:Unit {unit_name: $topic, subject: '英語'})
         MERGE (c)-[r:RELATED_TO]->(u)
-        SET r.ratio = 1, r.rank = -1
+        SET r.ratio = 1, r.rank = -1, r.updated_at = datetime()
         """
         for topic in topics:
             session.run(query_unit, concept_id=concept_id, topic=topic)
@@ -509,8 +512,8 @@ class EnglishProcessor(BaseSubjectProcessor):
         MATCH (bs:BookSection {contentssection_id: $section_id})
         MATCH (c:Concept {concept_id: $concept_id})
         MERGE (bs)-[r:CONTAINS]->(c)
-        ON CREATE SET r.num = $count
-        ON MATCH SET r.num = r.num + $count
+        ON CREATE SET r.num = $count, r.updated_at = datetime()
+        ON MATCH SET r.num = r.num + $count, r.updated_at = datetime()
         """
         session.run(query, section_id=section_id, concept_id=concept_id, count=count)
 
@@ -634,7 +637,8 @@ class JapaneseProcessor(BaseSubjectProcessor):
         query_pos = """
         MATCH (c:Concept {concept_id: $concept_id})
         MATCH (p:Property {property_name: $pos, subject: '国語', description: 'part_of_speech'})
-        MERGE (c)-[:BELONGS_TO]->(p)
+        MERGE (c)-[r:BELONGS_TO]->(p)
+        SET r.updated_at = datetime()
         """
         session.run(query_pos, concept_id=concept_id, pos=pos)
         
@@ -645,7 +649,7 @@ class JapaneseProcessor(BaseSubjectProcessor):
         MATCH (bs:BookSection {contentssection_id: $section_id})
         MATCH (c:Concept {concept_id: $concept_id})
         MERGE (bs)-[r:CONTAINS]->(c)
-        SET r.num = -1
+        SET r.num = -1, r.updated_at = datetime()
         """
         session.run(query, section_id=section_id, concept_id=concept_id)
 
@@ -666,7 +670,7 @@ class JapaneseProcessor(BaseSubjectProcessor):
         UNWIND $letter_data AS data
         MATCH (c:Concept {concept_name: data.char, description: '文字', subject: '国語'})
         MERGE (bs)-[r:CONTAINS]->(c)
-        SET r.num = -1
+        SET r.num = -1, r.updated_at = datetime()
         """
         session.run(query, section_id=section_id, letter_data=letter_data)
 

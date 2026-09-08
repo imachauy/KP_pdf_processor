@@ -1,5 +1,6 @@
 import os
 from neo4j import GraphDatabase
+from datetime import datetime
 
 # ==========================================
 # 設定
@@ -31,6 +32,7 @@ def register_grades(driver):
     SET p.property_name = $name,
         p.subject = "",
         p.description = "grades",
+        p.updated_at = datetime(),
         p.is_pre_defined = true
     """
     
