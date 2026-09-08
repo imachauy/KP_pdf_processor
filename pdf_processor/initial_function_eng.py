@@ -4,7 +4,7 @@ from neo4j import GraphDatabase
 from tqdm import tqdm
 from datetime import datetime
 
-CSV_FILE = "csv2_data.csv"
+CSV_FILE = "eng_word_list.csv"
 NEO4J_URI = os.getenv("NEO4J_URL", "bolt://localhost:7687")
 NEO4J_AUTH = (os.getenv("NEO4J_USER", "neo4j"), os.getenv("NEO4J_PASSWORD", "password"))
 
