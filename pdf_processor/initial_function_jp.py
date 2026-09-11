@@ -113,8 +113,17 @@ def process_csv(driver):
             # Unit紐付け
             sub_u = str(row.get('subunit')).strip()
             main_u = str(row.get('unit')).strip()
-            target_u = sub_u if (sub_u and sub_u != 'nan') else (main_u if (main_u and main_u != 'nan') else None)
-            if target_u:
+            
+            # 紐付け対象のIDをまとめる（setを使って重複を排除）
+            target_units = set()
+            
+            if main_u and main_u != 'nan':
+                target_units.add(main_u)
+            if sub_u and sub_u != 'nan':
+                target_units.add(sub_u)
+                
+            # 対象が存在する場合はそれぞれクエリを実行
+            for target_u in target_units:
                 session.run(q_link_u, cid=c_id, uid=target_u)
 
             # Property紐付け
