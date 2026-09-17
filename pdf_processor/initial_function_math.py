@@ -226,6 +226,22 @@ def process_math_quizzes(driver, client):
             page_qs = str(row.get('page_qs', '1')).strip()
             page_qe = str(row.get('page_qe', '1')).strip()
             
+            # --- 1. bs_id の組み立て ---
+            if not answer_id:
+                # Textbookの場合
+                bs_id = f"{contentsid}_{page_s}_{page_e}"
+                ans_bs_id = ""
+            else:
+                # Questionの場合
+                bs_id = f"{contentsid}_{page_qs}_{page_qe}"
+                ans_bs_id = f"{answer_id}_{page_s}_{page_e}"
+
+            # --- 2. DB既存チェック（存在すればスキップ） ---
+            check_query = "MATCH (bs:BookSection {contentssection_id: $bs_id}) RETURN bs.contentssection_id LIMIT 1"
+            if session.run(check_query, bs_id=bs_id).single() is not None:
+                continue
+            
+            # --- 3. 未登録の場合のみ値を取得してVSM計算 ---
             contents = str(row.get('contents', '')).strip()
             contents = "" if contents == 'nan' else contents
             
@@ -248,25 +264,20 @@ def process_math_quizzes(driver, client):
                 except (ValueError, SyntaxError):
                     vsm_vec = get_embedding(client, contents)
             
-            # 1. BookSectionノードの登録
+            # --- 4. BookSectionノードの登録 ---
             if not answer_id:
-                # Textbookの場合
-                bs_id = f"{contentsid}_{page_s}_{page_e}"
                 session.run(q_textbook, bs_id=bs_id, page_s=page_s, page_e=page_e, 
                             contents=contents, vsm=vsm_vec)
             else:
-                # Questionの場合
-                bs_id = f"{contentsid}_{page_qs}_{page_qe}"
-                ans_bs_id = f"{answer_id}_{page_s}_{page_e}"
                 session.run(q_question, bs_id=bs_id, object_id=contents_view, 
                             ans_bs_id=ans_bs_id, ans_object_id=answer_view, 
                             page_s=page_s, page_e=page_e, contents=contents, vsm=vsm_vec)
             
-            # 2. 小単元への紐付け (RELATED_TO)
+            # --- 5. 小単元への紐付け (RELATED_TO) ---
             if sub_unit:
                 session.run(q_unit, bs_id=bs_id, sub_unit=sub_unit)
             
-            # 3. キーワードへの紐付け (CONTAINS)
+            # --- 6. キーワードへの紐付け (CONTAINS) ---
             keywords_dict = extract_keywords_recursive(contents, concepts)
             if keywords_dict:
                 kw_data = [{"name": k, "count": v} for k, v in keywords_dict.items()]
