@@ -53,29 +53,51 @@ def format_yomi(val):
     if val == "-": return ""
     return [v.strip() for v in val.split("・")] if "・" in val else val
 
+def check_already_initialized(driver):
+    """すでにDBに国語のデータが1件でも入っているか判定する"""
+    query = "MATCH (u:Unit {subject: '国語'}) RETURN u LIMIT 1"
+    with driver.session() as session:
+        return session.run(query).single() is not None
+
 def register_master_data(driver):
-    """Unit, Unitの階層, Propertyのマスタデータを登録"""
-    # 変更: u.is_pre_defined = true を追加
-    q_unit = "MERGE (u:Unit {unit_id: $id}) SET u.unit_name = $name, u.subject = '国語', u.is_pre_defined = true, u.updated_at = datetime()"
+    """Unit, Unitの階層, PropertyのマスタデータをUNWINDで一括登録"""
+    q_unit = """
+    UNWIND $batch AS data
+    MERGE (u:Unit {unit_id: data.id})
+    SET u.unit_name = data.name, u.subject = '国語', u.is_pre_defined = true, u.updated_at = datetime()
+    """
     
-    q_part_of = "MATCH (c:Unit {unit_id: $cid}), (p:Unit {unit_id: $pid}) MERGE (c)-[r:PART_OF]->(p) SET r.updated_at = datetime()"
+    q_part_of = """
+    UNWIND $batch AS data
+    MATCH (c:Unit {unit_id: data.cid}), (p:Unit {unit_id: data.pid})
+    MERGE (c)-[r:PART_OF]->(p)
+    SET r.updated_at = datetime()
+    """
     
-    # 変更: p.is_pre_defined = true を追加
-    q_prop = "MERGE (p:Property {property_id: $id}) SET p.property_name = $name, p.subject = '国語', p.description = $desc, p.is_pre_defined = true, p.updated_at = datetime()"
+    q_prop = """
+    UNWIND $batch AS data
+    MERGE (p:Property {property_id: data.id})
+    SET p.property_name = data.name, p.subject = '国語', p.description = data.desc, p.is_pre_defined = true, p.updated_at = datetime()
+    """
+
+    unit_batch = [{"id": uid, "name": uname} for uid, uname in UNIT_DATA_KOKUGO]
+    part_of_batch = [{"cid": cid, "pid": pid} for cid, pid in PART_OF_RELATIONS]
+    prop_batch = []
+    
+    for p_list, desc in [(PROP_DIFFICULTY, "difficulty"), (PROP_RADICAL, "radical"), (PROP_TOPIC, "トピック"), (PROP_PoS, "品詞")]:
+        for pid, pname in p_list:
+            prop_batch.append({"id": pid, "name": pname, "desc": desc})
 
     with driver.session() as session:
-        for uid, uname in UNIT_DATA_KOKUGO:
-            session.run(q_unit, id=uid, name=uname)
-        for cid, pid in PART_OF_RELATIONS:
-            session.run(q_part_of, cid=cid, pid=pid)
-        
-        for p_list, desc in [(PROP_DIFFICULTY, "difficulty"), (PROP_RADICAL, "radical"), (PROP_TOPIC, "トピック"), (PROP_PoS, "品詞")]:
-            for pid, pname in p_list:
-                session.run(q_prop, id=pid, name=pname, desc=desc)
+        session.run(q_unit, batch=unit_batch)
+        session.run(q_part_of, batch=part_of_batch)
+        if prop_batch:
+            session.run(q_prop, batch=prop_batch)
+            
     print("✅ Kokugo Master Data Registered (Upserted)")
 
 def process_csv(driver):
-    """CSVからConceptを登録して紐付け"""
+    """CSVからConceptを登録して紐付け（UNWINDによる一括バルク処理で超高速化）"""
     if not os.path.exists(CSV_FILE):
         print(f"❌ File not found: {CSV_FILE}")
         return
@@ -83,90 +105,117 @@ def process_csv(driver):
     df = pd.read_csv(CSV_FILE, dtype=str)
     df.columns = df.columns.str.strip()
 
-    # 変更: c.is_pre_defined = true を追加
-    q_concept = """
-    MERGE (c:Concept {concept_id: $c_id})
-    SET c.concept_name = $c_name,
-        c.num_strokes = $num_strokes,
-        c.yomi_on = $yomi_on,
-        c.yomi_kun = $yomi_kun,
-        c.subject = "国語",
-        c.updated_at = datetime(),
-        c.is_pre_defined = true
-    """
-    
-    q_link_u = "MATCH (c:Concept {concept_id: $cid}), (u:Unit {unit_id: $uid}) MERGE (c)-[r:BELONGS_TO]->(u) SET r.updated_at = datetime()"
-    q_link_p = "MATCH (c:Concept {concept_id: $cid}), (p:Property {property_id: $pid}) MERGE (c)-[r:BELONGS_TO]->(p) SET r.updated_at = datetime()"
+    concepts_batch = []
+    unit_rels_batch = []
+    prop_rels_batch = []
+
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Preparing Kokugo CSV Data"):
+        c_id = str(row.get('id')).strip()
+        if not c_id or c_id == 'nan': continue
+
+        num_strokes = str(row.get('num_strokes', '')).strip()
+        if num_strokes.lower() == 'nan': num_strokes = ""
+
+        c_name = str(row.get('name', '')).strip()
+        yomi_on = format_yomi(row.get('attribute_on'))
+        yomi_kun = format_yomi(row.get('attribute_kun'))
+
+        concepts_batch.append({
+            "c_id": c_id, "c_name": c_name, "num_strokes": num_strokes,
+            "yomi_on": yomi_on, "yomi_kun": yomi_kun
+        })
+
+        # Unit紐付けデータ
+        sub_u = str(row.get('subunit')).strip()
+        main_u = str(row.get('unit')).strip()
+        target_units = set()
+        if main_u and main_u != 'nan': target_units.add(main_u)
+        if sub_u and sub_u != 'nan': target_units.add(sub_u)
+        
+        for tu in target_units:
+            unit_rels_batch.append({"c_id": c_id, "u_id": tu})
+
+        # Property紐付けデータ
+        for prop_col in ['radical', 'difficulty_1', 'difficulty_2', 'difficulty_3', 'topic']:
+            prop_val = str(row.get(prop_col)).strip()
+            if prop_val and prop_val != 'nan':
+                for pid in prop_val.split(';'):
+                    if pid.strip():
+                        prop_rels_batch.append({"c_id": c_id, "p_id": pid.strip()})
 
     with driver.session() as session:
-        for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing Kokugo CSV"):
-            c_id = str(row.get('id')).strip()
-            if not c_id or c_id == 'nan': continue
-
-            num_strokes = str(row.get('num_strokes', '')).strip()
-            if num_strokes.lower() == 'nan': num_strokes = ""
-
-            session.run(q_concept, c_id=c_id, c_name=str(row.get('name', '')).strip(),
-                        num_strokes=num_strokes, yomi_on=format_yomi(row.get('attribute_on')),
-                        yomi_kun=format_yomi(row.get('attribute_kun')))
-
-            # Unit紐付け
-            sub_u = str(row.get('subunit')).strip()
-            main_u = str(row.get('unit')).strip()
+        print("🚀 Registering Kokugo Concepts to DB...")
+        session.run("""
+            UNWIND $batch AS data
+            MERGE (c:Concept {concept_id: data.c_id})
+            SET c.concept_name = data.c_name,
+                c.num_strokes = data.num_strokes,
+                c.yomi_on = data.yomi_on,
+                c.yomi_kun = data.yomi_kun,
+                c.subject = "国語",
+                c.updated_at = datetime(),
+                c.is_pre_defined = true
+        """, batch=concepts_batch)
+        
+        print("🚀 Linking Concepts to Units...")
+        if unit_rels_batch:
+            session.run("""
+                UNWIND $batch AS data
+                MATCH (c:Concept {concept_id: data.c_id}), (u:Unit {unit_id: data.u_id})
+                MERGE (c)-[r:BELONGS_TO]->(u)
+                SET r.updated_at = datetime()
+            """, batch=unit_rels_batch)
             
-            # 紐付け対象のIDをまとめる（setを使って重複を排除）
-            target_units = set()
-            
-            if main_u and main_u != 'nan':
-                target_units.add(main_u)
-            if sub_u and sub_u != 'nan':
-                target_units.add(sub_u)
-                
-            # 対象が存在する場合はそれぞれクエリを実行
-            for target_u in target_units:
-                session.run(q_link_u, cid=c_id, uid=target_u)
+        print("🚀 Linking Concepts to Properties...")
+        if prop_rels_batch:
+            session.run("""
+                UNWIND $batch AS data
+                MATCH (c:Concept {concept_id: data.c_id}), (p:Property {property_id: data.p_id})
+                MERGE (c)-[r:BELONGS_TO]->(p)
+                SET r.updated_at = datetime()
+            """, batch=prop_rels_batch)
 
-            # Property紐付け
-            for prop_col in ['radical', 'difficulty_1', 'difficulty_2', 'difficulty_3', 'topic']:
-                prop_val = str(row.get(prop_col)).strip()
-                if prop_val and prop_val != 'nan':
-                    for pid in prop_val.split(';'):
-                        if pid.strip():
-                            session.run(q_link_p, cid=c_id, pid=pid.strip())
-    print("✅ Kokugo CSV Processing Complete (Upserted)")
+    print("✅ Kokugo CSV Processing Complete (Ultra-Fast)")
 
 def link_phonetic_variants(driver):
-    """
-    濁音・半濁音(先)から、対応する清音(後)へ FOLLOWS エッジを結ぶ
-    """
+    """濁音・半濁音から清音へ FOLLOWS エッジを結ぶ（UNWINDで一括登録）"""
     q_link = """
-    MATCH (base:Concept {concept_name: $base_char})
-    MATCH (variant:Concept {concept_name: $variant_char})
+    UNWIND $batch AS data
+    MATCH (base:Concept {concept_name: data.base_char})
+    MATCH (variant:Concept {concept_name: data.variant_char})
     MERGE (variant)-[r:FOLLOWS]->(base)
-    SET r.description = $desc, r.updated_at = datetime()
+    SET r.description = data.desc, r.updated_at = datetime()
     """
     
+    batch = []
+    for base_char, variant_char in DAKUON_PAIRS:
+        batch.append({"base_char": base_char, "variant_char": variant_char, "desc": "濁音"})
+    for base_char, variant_char in HANDAKUON_PAIRS:
+        batch.append({"base_char": base_char, "variant_char": variant_char, "desc": "半濁音"})
+        
     print("🔗 Linking Phonetic Variants (Dakuon & Handakuon)...")
     with driver.session() as session:
-        # 濁音の処理 (description: "濁音")
-        for base_char, variant_char in DAKUON_PAIRS:
-            session.run(q_link, base_char=base_char, variant_char=variant_char, desc="濁音")
-            
-        # 半濁音の処理 (description: "半濁音")
-        for base_char, variant_char in HANDAKUON_PAIRS:
-            session.run(q_link, base_char=base_char, variant_char=variant_char, desc="半濁音")
-            
+        if batch:
+            session.run(q_link, batch=batch)
     print("✅ Phonetic Variants Linked Successfully")
 
 def main():
     driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
-    register_master_data(driver)
-    process_csv(driver)
     
-    # Conceptノードが揃ったあとにエッジを結ぶ
-    link_phonetic_variants(driver)
-    
-    driver.close()
+    try:
+        if check_already_initialized(driver):
+            print("⚡ すでに国語の初期データは登録済みです。処理をすべてスキップします。")
+            return
+            
+        register_master_data(driver)
+        process_csv(driver)
+        link_phonetic_variants(driver)
+        print("🎉 すべての国語ノードの初期登録が完了しました！")
+        
+    except Exception as e:
+        print(f"❌ エラーが発生しました: {e}")
+    finally:
+        driver.close()
 
 if __name__ == "__main__":
     main()

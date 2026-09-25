@@ -29,7 +29,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_TABLE = os.getenv("DB_TABLE")
 
 if not all([DB_HOST, DB_NAME, DB_PASSWORD, DB_TABLE]):
-    raise ValueError("Missing ClickHouse env vars: DB_HOST, DB_NAME, DB_PASSWORD, DB_TABLE")
+    raise ValueError("Missing MySQL env vars: DB_HOST, DB_NAME, DB_PASSWORD, DB_TABLE")
 
 LEAF_API_URL = os.getenv("LEAF_API_URL")
 LEAF_API_KEY = os.getenv("LEAF_API_KEY")
@@ -69,12 +69,14 @@ logger.info(
     bool(LEAF_AUTH_HEADER),
 )
 
-client = get_client(
-    host=DB_HOST,
-    username=DB_USER,
-    password=DB_PASSWORD,
-    database=DB_NAME,
-)
+def get_db_connection():
+    """MySQLデータベースへの接続を確立して返す"""
+    return mysql.connector.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+    )
 
 STATE_FILE = "ch_cursor.txt"
 
@@ -295,8 +297,7 @@ def check_pdf_endpoint(content_id):
         raise RuntimeError(f"Failed to reach API for {content_id}") from exc
 
 def handle_rows(rows):
-
-    # rows is a list of tuples/dicts depending on query format
+    # rows is a list of tuples depending on query format
     logger.info("Processing %s rows", len(rows))
     content_ids = []
     for row in rows:
@@ -332,25 +333,40 @@ def main():
     logger.info("Starting cursor at %s", format_cursor(last_seen))
 
     while True:
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
 
-        query = f"""
-            SELECT {QUERY_OPERATION}, {QUERY_CONTENTSID}, {QUERY_CONTENTSNAME}, {QUERY_COURSENAME}, {QUERY_TIMESTAMP}, {QUERY_CONTENTSURL}
-            FROM {DB_TABLE}
-            WHERE {QUERY_TIMESTAMP} > parseDateTimeBestEffort(%(cursor)s)
-            ORDER BY {QUERY_TIMESTAMP}
-            LIMIT 5000
-        """
-        rows = client.query(query, parameters={"cursor": format_cursor(last_seen)}).result_rows
+            # Processorスクリプトが期待する並び(OPERATION, ID, NAME, SCHOOL, COURSE, TIMESTAMP)に変更
+            query = f"""
+                SELECT {QUERY_OPERATION}, {QUERY_CONTENTSID}, {QUERY_CONTENTSNAME}, {QUERY_SCHOOLID}, {QUERY_COURSENAME}, {QUERY_TIMESTAMP}
+                FROM {DB_TABLE}
+                WHERE {QUERY_TIMESTAMP} > %s
+                ORDER BY {QUERY_TIMESTAMP}
+                LIMIT 5000
+            """
+            
+            cursor.execute(query, (format_cursor(last_seen),))
+            rows = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
 
-        if rows:
-            handle_rows(rows)
+            if rows:
+                handle_rows(rows)
 
+                last_seen = parse_cursor(rows[-1][COL_TIMESTAMP])
+                save_cursor(last_seen)
+                logger.info("Advanced cursor to %s", format_cursor(last_seen))
+            else:
+                time.sleep(1.0)  # polling interval
 
-            last_seen = parse_cursor(rows[-1][COL_TIMESTAMP])  # timestamp column index
-            save_cursor(last_seen)
-            logger.info("Advanced cursor to %s", format_cursor(last_seen))
-        else:
-            time.sleep(1.0)  # polling interval
+        except Error as e:
+            logger.error(f"MySQL Error: {e}")
+            time.sleep(5.0)
+        except Exception as e:
+            logger.error(f"Unexpected Error: {e}")
+            time.sleep(5.0)
 
 if __name__ == "__main__":
     main()

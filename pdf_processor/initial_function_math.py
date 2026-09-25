@@ -57,6 +57,12 @@ def extract_keywords_recursive(text, concepts):
             text_info_tmp = text_info_tmp.replace(concept_name, "")
     return extracted_counts
 
+def check_already_initialized(driver):
+    """すでにDBに数学のデータが1件でも入っているか判定する"""
+    query = "MATCH (u:Unit {subject: '数学'}) RETURN u LIMIT 1"
+    with driver.session() as session:
+        return session.run(query).single() is not None
+
 # ==========================================
 # 各CSVの処理関数
 # ==========================================
@@ -236,7 +242,7 @@ def process_math_quizzes(driver, client):
                 bs_id = f"{contentsid}_{page_qs}_{page_qe}"
                 ans_bs_id = f"{answer_id}_{page_s}_{page_e}"
 
-            # --- 2. DB既存チェック（存在すればスキップ） ---
+            # --- 2. DB既存チェック（途中で止まった場合のレジューム用） ---
             check_query = "MATCH (bs:BookSection {contentssection_id: $bs_id}) RETURN bs.contentssection_id LIMIT 1"
             if session.run(check_query, bs_id=bs_id).single() is not None:
                 continue
@@ -293,16 +299,21 @@ def main():
     client = OpenAI(api_key=OPENAI_API_KEY)
     
     try:
+        # ★ ここでDBの状態をチェックし、初期化済みならスキップ
+        if check_already_initialized(driver):
+            print("⚡ すでに初期データ(Unit)が登録されています。処理をすべてスキップします。")
+            return
+
         process_math_units(driver)
         process_math_subunits(driver)
         process_math_keywords(driver)
         process_math_quizzes(driver, client)
+        print("🎉 すべての数学ノードの初期登録が完了しました！")
         
     except Exception as e:
         print(f"❌ エラーが発生しました: {e}")
     finally:
         driver.close()
-        print("🎉 すべての数学ノードの初期登録が完了しました！")
 
 if __name__ == "__main__":
     main()
