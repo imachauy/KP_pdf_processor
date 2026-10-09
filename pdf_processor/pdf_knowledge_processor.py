@@ -720,20 +720,23 @@ def download_pdf_bytes(contents_id):
     with urllib.request.urlopen(req, timeout=60) as response:
         return response.read()
 
-def create_book_node(driver, contents_id, contents_name, subject, school_year):
+def create_book_node(driver, contents_id, contents_name, subject, school_year, school_id, course_name):
     query = """
     MERGE (b:Book {contents_id: $contents_id})
     SET b.contents_name = $contents_name,
         b.subject = $subject,
         b.school_year = $school_year,
+        b.school_id = $school_id,
+        b.course_name = $course_name,
         b.updated_at = datetime(),
         b.is_pre_defined = false
     """
     with driver.session() as session:
         session.run(query, contents_id=contents_id, contents_name=contents_name,
-                    subject=subject, school_year=school_year)
+                    subject=subject, school_year=school_year,
+                    school_id=school_id, course_name=course_name)
 
-def process_single_content(contents_id, contents_name, course_name, object_id):
+def process_single_content(contents_id, contents_name, course_name, object_id, school_id):
     logger.info(f"★ START Processing: {contents_name} (ID: {contents_id})")
 
     try:
@@ -743,10 +746,10 @@ def process_single_content(contents_id, contents_name, course_name, object_id):
         match_year = re.search(r'年度(.*?)年', course_name)
         school_year = (match_year.group(1) + "年") if match_year else ""
         
-        logger.info(f"  - Meta: Subject={subject}, Year={school_year}")
+        logger.info(f"  - Meta: Subject={subject}, Year={school_year}, SchoolID={school_id}")
 
-        # Bookノードの作成
-        create_book_node(global_infra.driver, contents_id, contents_name, subject, school_year)
+        # Bookノードの作成（引数を追加）
+        create_book_node(global_infra.driver, contents_id, contents_name, subject, school_year, school_id, course_name)
 
         # PDFのダウンロードと画像化
         pdf_bytes = download_pdf_bytes(contents_id)
@@ -776,13 +779,14 @@ def custom_handle_rows(rows):
     
     candidates = []
     for row in rows:
-        # 新しいSELECT句に基づくインデックス
-        # 0: QUERY_OPERATION = operation_name
-        # 1: QUERY_CONTENTSID = contents_id
-        # 2: QUERY_CONTENTSNAME = contents_name
-        # 3: QUERY_COURSENAME = context_label
-        # 4: QUERY_TIMESTAMP = timestamp
-        # 5: QUERY_CONTENTSURL = object_id
+        # DBからのSELECT句の順番に基づくインデックス
+        # 0: operation_name
+        # 1: contents_id
+        # 2: contents_name
+        # 3: school_id        <-- ここから抽出
+        # 4: course_name      <-- 以前の3
+        # 5: timestamp        <-- 以前の4
+        # 6: object_id (URL)  <-- 以前の5
         
         if row[0] != "REGISTER_CONTENTS": continue
         if not row[1]: continue
@@ -790,8 +794,9 @@ def custom_handle_rows(rows):
         candidates.append({
             "contents_id": row[1],
             "contents_name": row[2],
-            "course_name": row[3],
-            "object_id": row[5] # index 5 から object_id を取得
+            "school_id": row[3],      # 追加
+            "course_name": row[4],    # インデックスを調整
+            "object_id": row[6]       # インデックスを調整
         })
 
     if not candidates: return
@@ -814,7 +819,8 @@ def custom_handle_rows(rows):
             contents_id=item["contents_id"], 
             contents_name=item["contents_name"],
             course_name=item["course_name"],
-            object_id=item["object_id"] # object_id を渡す
+            object_id=item["object_id"],
+            school_id=item["school_id"]
         )
 
 def main():
